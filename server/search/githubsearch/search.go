@@ -26,11 +26,17 @@ func Search(rules []model.Rule) {
 	var content string
 	var counts int
 	for _, rule := range rules {
-		results, err := client.SearchCode(rule.Content)
+		query, err := BuildQuery(rule.Content)
+		if err != nil {
+			global.GVA_LOG.Error("BuildQuery error", zap.Error(err))
+			continue
+		}
+		results, err := client.SearchCode(query)
 		if err != nil {
 			global.GVA_LOG.Error("SearchCode error", zap.Error(err))
+			continue
 		}
-		counts = SaveResult(results, &rule.Content)
+		counts = SaveResult(results, rule.Content, "")
 		if counts > 0 {
 			content += fmt.Sprintf("%s: %d条<br>", rule.Content, counts)
 		}
@@ -42,7 +48,7 @@ func Search(rules []model.Rule) {
 				global.GVA_LOG.Error("send email error", zap.Any("err", err))
 			}
 		}
-		if global.GVA_CONFIG.Email.Enable {
+		if global.GVA_CONFIG.Wechat.Enable {
 			content = "Github敏感信息报告\n" + content
 			err = utils.BotSend(content)
 			if err != nil {
@@ -52,41 +58,27 @@ func Search(rules []model.Rule) {
 	}
 }
 
-func SaveResult(results []*github.CodeSearchResult, keyword *string) int {
-	searchResults := ConvertToSearchResults(results, keyword)
-	insertCount := 0
-	for _, result := range searchResults {
-		exist := service.CheckExistOfSearchResult(&result)
-		if exist {
-			continue
-		}
-		err := service.CreateSearchResult(result)
-		if err != nil {
-			global.GVA_LOG.Error("save search result error", zap.Any("save searchResult error",
-				err))
-		} else {
-			insertCount++
-		}
-	}
+func SaveResult(results []*github.CodeSearchResult, keyword, secKeyword string) int {
+	searchResults := ConvertToSearchResults(results, keyword, secKeyword)
+	insertCount := service.SaveSearchResults(searchResults)
 	return insertCount
 }
 
-func ConvertToSearchResults(results []*github.CodeSearchResult, keyword *string) []model.SearchResult {
+func ConvertToSearchResults(results []*github.CodeSearchResult, keyword, secKeyword string) []model.SearchResult {
 	searchResults := make([]model.SearchResult, 0)
 	for _, result := range results {
 		codeResults := result.CodeResults
 		for _, codeResult := range codeResults {
 			searchResult := model.SearchResult{
-				RepoUrl: *codeResult.Repository.HTMLURL,
-				Repo:    *codeResult.Repository.FullName,
-				Keyword: *keyword,
-				Url:     *codeResult.HTMLURL,
-				Path:    *codeResult.Path,
-				Status:  0,
+				RepoUrl:    *codeResult.Repository.HTMLURL,
+				Repo:       *codeResult.Repository.FullName,
+				Keyword:    keyword,
+				SecKeyword: secKeyword,
+				Url:        *codeResult.HTMLURL,
+				Path:       *codeResult.Path,
+				Status:     0,
 			}
 			if len(codeResult.TextMatches) > 0 {
-				hash := utils.GenMd5WithSpecificLen(*(codeResult.TextMatches[0].Fragment), 50)
-				searchResult.TextmatchMd5 = hash
 				b, err := json.Marshal(codeResult.TextMatches)
 				searchResult.TextMatchesJson = b
 				if err != nil {
@@ -105,23 +97,26 @@ func RunTask(duration time.Duration) {
 		global.GVA_LOG.Error("GetValidRulesByType github err", zap.Error(err))
 		return
 	}
-	if len(rules) == 0 {
-		global.GVA_LOG.Info("Rules of github is empty, please specify one rule for scan at least")
-		return
-	}
 	Search(rules)
 	global.GVA_LOG.Info(fmt.Sprintf("Comple the scan of Github, start to sleep %d seconds", duration))
 	time.Sleep(duration * time.Second)
 }
 
-func (c *Client) SearchCode(keyword string) ([]*github.CodeSearchResult, error) {
+func (c *Client) GetCommiter(ctx context.Context, owner, repo string) string {
+	commit, _, err := c.Client.Repositories.GetCommit(ctx, owner, repo, "master")
+	if err != nil {
+		global.GVA_LOG.Error("get github commit err", zap.Error(err))
+		return ""
+	}
+	return commit.Commit.Committer.GetEmail()
+}
+
+func (c *Client) SearchCode(query string) ([]*github.CodeSearchResult, error) {
 	var allSearchResult []*github.CodeSearchResult
 	var err error
 	ctx := context.Background()
 	listOpt := github.ListOptions{PerPage: 100}
-	opt := &github.SearchOptions{Order: "desc", TextMatch: true, ListOptions: listOpt}
-	query := keyword + " in:file"
-	query, err = BuildQuery(query)
+	opt := &github.SearchOptions{TextMatch: true, ListOptions: listOpt}
 	global.GVA_LOG.Info("Github scan with the query:", zap.Any("github", query))
 	for {
 		result, nextPage := searchCodeByOpt(c, ctx, query, *opt)
@@ -137,37 +132,48 @@ func (c *Client) SearchCode(keyword string) ([]*github.CodeSearchResult, error) 
 }
 
 func BuildQuery(query string) (string, error) {
-	err, filterRule := model.GetFilterRule()
+	query = query + " in:file"
+	err, extensionFilters := model.GetFilterByClass("extension")
+	if err != nil {
+		return query, err
+	}
 	// if there is no record, does not return err
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return query, nil
 	}
 	str := ""
-	if filterRule.Extension != "" {
-		extensions := strings.Split(filterRule.Extension, ",")
+	for _, extensionFilter := range extensionFilters {
+		extensions := strings.Split(extensionFilter.Content, ",")
+		filterType := extensionFilter.FilterType
 		for _, extension := range extensions {
-			str += " -extension:" + extension
+			if filterType == "blacklist" {
+				str += " -extension:" + extension
+			} else {
+				str += " +extension:" + extension
+			}
 		}
 	}
-	if filterRule.WhiteExts != "" {
-		whiteExts := strings.Split(filterRule.WhiteExts, ",")
-		for _, whiteExt := range whiteExts {
-			str += " +extension:" + whiteExt
+
+	err, keywordFilters := model.GetFilterByClass("keyword")
+
+	for _, keywordFilter := range keywordFilters {
+		keywords := strings.Split(keywordFilter.Content, ",")
+		filterType := keywordFilter.FilterType
+		for _, keyword := range keywords {
+			if filterType == "black" {
+				str += " NOT " + keyword
+			} else {
+				str += " " + keyword
+			}
 		}
 	}
-	if filterRule.Keywords != "" {
-		keyswords := strings.Split(filterRule.Keywords, ",")
-		for _, keyword := range keyswords {
-			str += " NOT " + keyword
-		}
-	}
+
 	builtQuery := query + str
 	return builtQuery, err
 }
 
 func searchCodeByOpt(c *Client, ctx context.Context, query string, opt github.SearchOptions) (*github.CodeSearchResult,
 	int) {
-	query, err := BuildQuery(query)
 	result, res, err := c.Client.Search.Code(ctx, query, &opt)
 	if _, ok := err.(*github.RateLimitError); ok {
 		global.GVA_LOG.Warn("Trigger the github rate limit, ready to sleep 5 minutes")

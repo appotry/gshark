@@ -16,3 +16,7 @@ var (
 	GVA_VP     *viper.Viper
 	GVA_LOG    *zap.Logger
 )
+
+const UnhandledStatus int = 0
+const IgnoredStatus int = 2
+const ConfirmedStatus int = 1

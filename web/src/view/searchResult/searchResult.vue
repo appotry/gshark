@@ -62,13 +62,37 @@
               >
             </div>
             <el-button
-              icon="el-icon-delete"
               size="mini"
               slot="reference"
               type="primary"
               >批量确认</el-button
             >
           </el-popover>
+        </el-form-item>
+
+        <el-form-item>
+          <el-popover placement="top" v-model="taskVisible" width="160">
+            <p>确定启动过滤任务吗？过滤任务将自动忽略未匹配二次过滤关键词的结果</p>
+            <div style="text-align: right; margin: 0">
+              <el-button @click="taskVisible = false" size="mini" type="text"
+              >取消</el-button
+              >
+              <el-button @click="startFilterTask" size="mini" type="primary"
+              >确定</el-button
+              >
+            </div>
+            <el-button
+                size="mini"
+                slot="reference"
+                type="primary"
+                :disabled="taskBtnDisable"
+            >{{ taskButtonTxt }}</el-button
+            >
+          </el-popover>
+        </el-form-item>
+
+        <el-form-item label="仅展示二次关键词结果">
+          <el-switch v-model="searchInfo.onlySecKeyword" @change="secKeywordChange"></el-switch>
         </el-form-item>
       </el-form>
     </div>
@@ -85,20 +109,11 @@
 
       <el-table-column label="ID" prop="ID" width="50"></el-table-column>
 
-      <!-- <el-table-column label="仓库名称" width="120">
-        <template slot-scope="scope">
-          <el-link :href="scope.row.RepoUrl" type="primary" :underline="false">
-            {{ scope.row.repo }}
-          </el-link>
-        </template>
-      </el-table-column> -->
-
       <el-table-column label="文件" width="180">
         <template slot-scope="scope">
-          <el-link :href="scope.row.url" type="primary" :underline="false">
-            {{
-            scope.row.repo + "/" + scope.row.path
-          }}</el-link>
+          <a :href="scope.row.url" target="_blank" style="color: #409EFF;">
+            {{ scope.row.repo + "/" + scope.row.path}}
+          </a>
         </template>
       </el-table-column>
 
@@ -113,6 +128,8 @@
         prop="keyword"
         width="80"
       ></el-table-column>
+
+      <el-table-column label="二级关键词" prop="sec_keyword" width="100"></el-table-column>
 
       <el-table-column label="日期" width="100">
         <template slot-scope="scope">{{
@@ -168,9 +185,12 @@ import {
   getSearchResultList,
   updateSearchResult,
   updateSearchResultStatusByIds,
+  startFilterTask,
+  getTaskStatus
 } from "@/api/searchResult"; //  此处请自行替换地址
 import { formatTimeToStr } from "@/utils/date";
 import infoList from "@/mixins/infoList";
+
 export default {
   name: "SearchResult",
   mixins: [infoList],
@@ -181,6 +201,10 @@ export default {
       type: "",
       deleteVisible: false,
       confirmVisible: false,
+      taskVisible: false,
+      taskButtonTxt: "启动二次过滤",
+      taskBtnDisable: false,
+      onlySecKeyword: false,
       statusOptions: [
         {
           label: "未处理",
@@ -202,7 +226,6 @@ export default {
         keyword: "",
         path: "",
         url: "",
-        textmatchMd5: "",
         status: 0,
       },
     };
@@ -237,7 +260,15 @@ export default {
       }
       let result = "";
       for (let i = 0; i < val.length; i++) {
-        result = result + val[i].fragment;
+        const matches = val[i].matches;
+        let index = [];
+        matches.forEach(ele => {
+          index = index.concat(ele.indices);
+        });
+        let fragment = val[i].fragment;
+        fragment = fragment.slice(0, index[0]) + "【" + fragment.slice(index[0]);
+        fragment = fragment.slice(0, index[index.length-1]+1) + "】" + fragment.slice(index[index.length-1]+1);
+        result = result + fragment;
         if (i !== val.length - 1) {
           result = result + "\n=====================================\n";
         }
@@ -246,17 +277,27 @@ export default {
     },
   },
   methods: {
-    //条件搜索前端看此方法
     onSubmit() {
       this.page = 1;
       this.pageSize = 100;
       this.getTableData();
     },
+    secKeywordChange() {
+      this.getTableData();
+    },
     handleSelectionChange(val) {
       this.multipleSelection = val;
     },
+    async startFilterTask() {
+      await startFilterTask();
+      const resp = await getTaskStatus();
+      if (resp.msg === "running") {
+        this.taskButtonTxt = "任务运行中";
+        this.taskBtnDisable = true;
+      }
+      this.taskVisible = false;
+    },
     async onChange(isIgnore) {
-      console.log(isIgnore);
       const ids = [];
       if (this.multipleSelection.length === 0) {
         this.$message({
@@ -288,15 +329,15 @@ export default {
         } else {
           this.confirmVisible = false;
         }
-        this.getTableData();
+        await this.getTableData();
       }
     },
     async updateSearchResult(row, status) {
       const res = await findSearchResult({ ID: row.ID });
       this.type = "update";
-      res.data.researchResult.status = status;
+      res.data.searchResult.status = status;
       if (res.code === 0) {
-        this.formData = res.data.researchResult;
+        this.formData = res.data.searchResult;
         this.dialogFormVisible = true;
         const data = {
           repo: this.formData.repo,
@@ -304,13 +345,21 @@ export default {
         };
         const updateRes = await updateSearchResult(data);
         if (updateRes.code === 0) {
-          this.getTableData();
+          await this.getTableData();
         }
       }
     },
   },
   async created() {
     await this.getTableData();
+    const resp = await getTaskStatus();
+    if (resp.msg === "running") {
+      this.taskButtonTxt = "任务运行中";
+      this.taskBtnDisable = true;
+    } else {
+      this.taskButtonTxt = "启动二次过滤";
+      this.taskBtnDisable = false;
+    }
   },
 };
 </script>

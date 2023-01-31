@@ -14,12 +14,7 @@
         <el-form-item label="规则名称">
           <el-input placeholder="搜索条件" v-model="searchInfo.name"></el-input>
         </el-form-item>
-        <el-form-item label="状态">
-          <el-input
-            placeholder="搜索条件"
-            v-model="searchInfo.status"
-          ></el-input>
-        </el-form-item>
+
         <el-form-item>
           <el-button @click="onSubmit" type="primary">查询</el-button>
         </el-form-item>
@@ -46,6 +41,18 @@
             >
           </el-popover>
         </el-form-item>
+        <el-form-item>
+          <el-upload action="/api/rule/uploadRules" ref="ruleData" :with-credentials="true"
+          :headers="{ 'x-token': $store.getters['user/token'] }" :show-file-list="false"
+          :on-success="uploadSuccess">
+            <template #trigger>
+              <el-button type="primary">规则导入</el-button>
+            </template>
+          </el-upload>
+        </el-form-item>
+        <el-form-item>
+          <el-link href="https://github.com/madneal/gshark/blob/master/template.csv" type="primary">规则导入模板</el-link>
+        </el-form-item>
       </el-form>
     </div>
     <el-table
@@ -66,7 +73,7 @@
 
       <el-table-column
         label="规则类型"
-        prop="type"
+        prop="ruleType"
         width="120"
       ></el-table-column>
 
@@ -89,13 +96,12 @@
       ></el-table-column>
 
       <el-table-column label="状态" width="120">
-        <template slot-scope="scope">
-          <!-- {{ scope.row.status | formatStatus }} -->
+        <template v-slot="scope">
           <el-switch
             v-model="scope.row.status"
-            :active-value="1"
-            :inactive-value="0"
-            @change="switchStatus(scope.row.ID, scope.row.status, scope.row)"
+            :active-value="true"
+            :inactive-value="false"
+            @change="switchStatus(scope.row.ID, scope.row.status)"
           />
         </template>
       </el-table-column>
@@ -135,23 +141,20 @@
     <el-dialog
       :before-close="closeDialog"
       :visible.sync="dialogFormVisible"
-      title="弹窗操作"
+      title="新增规则"
     >
-      <el-form :model="formData" label-position="right" label-width="80px">
-        <el-form-item label="规则类型:">
-          <el-radio-group v-model="formData.type">
-            <el-radio label="github"></el-radio>
-            <el-radio label="gitlab"></el-radio>
-            <el-radio label="searchcode"></el-radio>
-            <el-radio label="domain"></el-radio>
-          </el-radio-group>
+      <el-form :model="formData" label-position="right" label-width="100px">
+        <el-form-item label="规则类型:" required>
+          <el-checkbox-group v-model="formData.ruleType">
+            <el-checkbox v-for="ruleType in types" :label="ruleType" :key="ruleType">{{ ruleType }}</el-checkbox>
+          </el-checkbox-group>
         </el-form-item>
 
-        <el-form-item label="规则内容:">
+        <el-form-item label="规则内容:" required>
           <el-input
             v-model="formData.content"
             clearable
-            placeholder="请输入"
+            placeholder="请输入关键词内容"
           ></el-input>
         </el-form-item>
 
@@ -172,14 +175,7 @@
         </el-form-item>
 
         <el-form-item label="状态:">
-          <el-select placeholder="请选择" v-model="formData.status">
-            <el-option
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-              v-for="item in statusOptions"
-            ></el-option>
-          </el-select>
+          <el-switch v-model="formData.status"></el-switch>
         </el-form-item>
       </el-form>
       <div class="dialog-footer" slot="footer">
@@ -198,10 +194,12 @@ import {
   updateRule,
   findRule,
   getRuleList,
-  switchRule,
-} from "@/api/rule"; //  此处请自行替换地址
+  switchRule, batchCreateRules,
+} from "@/api/rule";
 import { formatTimeToStr } from "@/utils/date";
 import infoList from "@/mixins/infoList";
+import { store } from '@/store/index';
+
 export default {
   name: "Rule",
   mixins: [infoList],
@@ -209,15 +207,20 @@ export default {
     return {
       listApi: getRuleList,
       dialogFormVisible: false,
+      dialogBatchRules: false,
       type: "",
       deleteVisible: false,
       multipleSelection: [],
       formData: {
-        type: "github",
+        ruleType: [],
         content: "",
         name: "",
         desc: "",
-        status: 1,
+        status: true,
+      },
+      batchRulesForm: {
+        type: [],
+        contents: ''
       },
       statusOptions: [
         {
@@ -229,6 +232,7 @@ export default {
           value: 1,
         },
       ],
+      types: ['github', 'gitlab', 'searchcode', 'domain'],
       typeOptions: [
         {
           label: "github",
@@ -242,6 +246,10 @@ export default {
           label: "searchcode",
           value: "searchcode",
         },
+        {
+          label: "postman",
+          value: "postman"
+        }
       ],
     };
   },
@@ -270,17 +278,14 @@ export default {
     },
   },
   methods: {
-    async switchStatus(id, status, row) {
-      console.log(id);
-      console.log(status);
-      console.log(row);
+    async switchStatus(id, status) {
       const data = {
         id,
         status,
       };
       const res = await switchRule(data);
       if (res) {
-        this.getTableData();
+        await this.getTableData();
       }
     },
     onSubmit() {
@@ -300,6 +305,13 @@ export default {
         this.deleteRule(row);
       });
     },
+    uploadSuccess() {
+      this.$message({
+        type: "success",
+        message: "规则导入成功"
+      });
+      this.getTableData();
+    },
     async onDelete() {
       const ids = [];
       if (this.multipleSelection.length == 0) {
@@ -314,7 +326,7 @@ export default {
           ids.push(item.ID);
         });
       const res = await deleteRuleByIds({ ids });
-      if (res.code == 0) {
+      if (res.code === 0) {
         this.$message({
           type: "success",
           message: "删除成功",
@@ -323,21 +335,21 @@ export default {
           this.page--;
         }
         this.deleteVisible = false;
-        this.getTableData();
+        await this.getTableData();
       }
     },
     async updateRule(row) {
       const res = await findRule({ ID: row.ID });
       this.type = "update";
-      if (res.code == 0) {
-        this.formData = res.data.rerule;
+      if (res.code === 0) {
+        this.formData = res.data.rule;
         this.dialogFormVisible = true;
       }
     },
     closeDialog() {
       this.dialogFormVisible = false;
       this.formData = {
-        type: "",
+        ruleType: [],
         content: "",
         name: "",
         desc: "",
@@ -354,11 +366,12 @@ export default {
         if (this.tableData.length == 1) {
           this.page--;
         }
-        this.getTableData();
+        await this.getTableData();
       }
     },
     async enterDialog() {
       let res;
+      this.formData.ruleType = this.formData.ruleType.join(',');
       switch (this.type) {
         case "create":
           res = await createRule(this.formData);
@@ -376,13 +389,26 @@ export default {
           message: "创建/更改成功",
         });
         this.closeDialog();
-        this.getTableData();
+        await this.getTableData();
       }
     },
     openDialog() {
       this.type = "create";
       this.dialogFormVisible = true;
+      this.formData.ruleType = [];
     },
+    async batchCreateRules() {
+      this.batchRulesForm.type = this.batchRulesForm.type.join(',');
+      const res = await batchCreateRules(this.batchRulesForm);
+      if (res.code === 0) {
+        this.dialogBatchRules = false;
+        this.$message({
+          type: 'success',
+          message: '批量创建规则成功'
+        });
+        await this.getTableData();
+      }
+    }
   },
   async created() {
     await this.getTableData();

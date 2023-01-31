@@ -2,12 +2,15 @@ package githubsearch
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"github.com/google/go-github/github"
+	"github.com/gregjones/httpcache"
+	"github.com/madneal/gshark/model"
+
 	"github.com/madneal/gshark/service"
+	"net/http"
 
 	"golang.org/x/oauth2"
-	"os"
 )
 
 var (
@@ -20,37 +23,43 @@ type Client struct {
 	Token  string
 }
 
-func InitGithubClients() (map[string]*Client, error) {
+func InitGithubClients(tokens []model.Token) map[string]*Client {
 	githubClients := make(map[string]*Client)
-	err, tokens := service.ListTokenByType("github")
-	if err == nil {
-		for _, token := range tokens {
-			githubToken := token.Content
-			gitClient := &github.Client{}
-			if githubToken != "" {
-				ctx := context.Background()
-				ts := oauth2.StaticTokenSource(
-					&oauth2.Token{AccessToken: githubToken},
-				)
-				tc := oauth2.NewClient(ctx, ts)
-				gitClient = github.NewClient(tc)
-				githubClients[token.Content] = NewGitClient(gitClient, githubToken)
+	for _, token := range tokens {
+		githubToken := token.Content
+		gitClient := &github.Client{}
+		if githubToken != "" {
+			ts := oauth2.StaticTokenSource(
+				&oauth2.Token{AccessToken: githubToken},
+			)
+			//tc := oauth2.NewClient(ctx, ts)
+			tc := &http.Client{
+				Transport: &oauth2.Transport{
+					Base:   httpcache.NewMemoryCacheTransport(),
+					Source: ts,
+				},
 			}
+			gitClient = github.NewClient(tc)
+			githubClients[token.Content] = NewGitClient(gitClient, githubToken)
 		}
 	}
-	return githubClients, err
+	return githubClients
 }
 
 func GetGithubClient() (*Client, error) {
 	var c *Client
-	clients, err := InitGithubClients()
+	err, tokens := service.ListTokenByType("github")
+	if err != nil {
+		return c, err
+	}
+	clients := InitGithubClients(tokens)
+
 	for _, client := range clients {
 		c = client
 		break
 	}
 	if c == nil {
-		fmt.Println("Github Client initial failed, please add token")
-		os.Exit(3)
+		err = errors.New("github Client initial failed, please add token")
 	}
 	return c, err
 }

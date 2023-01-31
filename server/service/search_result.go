@@ -4,35 +4,18 @@ import (
 	"github.com/madneal/gshark/global"
 	"github.com/madneal/gshark/model"
 	"github.com/madneal/gshark/model/request"
+	"go.uber.org/zap"
 )
-
-//@author: [piexlmax](https://github.com/piexlmax)
-//@function: CreateSearchResult
-//@description: 创建SearchResult记录
-//@param: searchResult model.SearchResult
-//@return: err error
 
 func CreateSearchResult(searchResult model.SearchResult) (err error) {
 	err = global.GVA_DB.Create(&searchResult).Error
 	return err
 }
 
-//@author: [piexlmax](https://github.com/piexlmax)
-//@function: DeleteSearchResult
-//@description: 删除SearchResult记录
-//@param: searchResult model.SearchResult
-//@return: err error
-
 func DeleteSearchResult(searchResult model.SearchResult) (err error) {
 	err = global.GVA_DB.Delete(&searchResult).Error
 	return err
 }
-
-//@author: [piexlmax](https://github.com/piexlmax)
-//@function: DeleteSearchResultByIds
-//@description: 批量删除SearchResult记录
-//@param: ids request.IdsReq
-//@return: err error
 
 func DeleteSearchResultByIds(ids request.IdsReq) (err error) {
 	err = global.GVA_DB.Delete(&[]model.SearchResult{}, "id in ?", ids.Ids).Error
@@ -45,11 +28,11 @@ func UpdateSearchResultByIds(req request.BatchUpdateReq) (err error) {
 	return err
 }
 
-//@author: [piexlmax](https://github.com/piexlmax)
-//@function: UpdateSearchResult
-//@description: 更新SearchResult记录
-//@param: searchResult *model.SearchResult
-//@return: err error
+func IgnoreResultsByRepo(repo string) (err error) {
+	err = global.GVA_DB.Table("search_result").Where("status = 0 and repo = ? and sec_keyword is null or sec_keyword = ''",
+		repo).UpdateColumn("status", global.IgnoredStatus).Error
+	return err
+}
 
 func UpdateSearchResult(updateReq request.UpdateReq) (err error) {
 	err = global.GVA_DB.Table("search_result").Where("repo = ?", updateReq.Repo).
@@ -62,22 +45,10 @@ func UpdateSearchResultById(id, status int) (err error) {
 	return err
 }
 
-//@author: [piexlmax](https://github.com/piexlmax)
-//@function: GetSearchResult
-//@description: 根据id获取SearchResult记录
-//@param: id uint
-//@return: err error, searchResult model.SearchResult
-
 func GetSearchResult(id uint) (err error, searchResult model.SearchResult) {
 	err = global.GVA_DB.Where("id = ?", id).First(&searchResult).Error
 	return
 }
-
-//@author: [piexlmax](https://github.com/piexlmax)
-//@function: GetSearchResultInfoList
-//@description: 分页获取SearchResult记录
-//@param: info request.SearchResultSearch
-//@return: err error, list interface{}, total int64
 
 func GetSearchResultInfoList(info request.SearchResultSearch) (err error, list interface{}, total int64) {
 	limit := info.PageSize
@@ -90,10 +61,13 @@ func GetSearchResultInfoList(info request.SearchResultSearch) (err error, list i
 		db = db.Where("`repo` LIKE ? or `text_matches_json` LIKE ?", "%"+info.Query+"%", "%"+info.Query+"%")
 	}
 	if info.Keyword != "" {
-		db = db.Where("`keyword` = ?", info.Keyword)
+		db = db.Where("`keyword` = ? or `sec_keyword` = ?", info.Keyword, info.Keyword)
 	}
 	if info.Status >= 0 {
 		db = db.Where("`status` = ?", info.Status)
+	}
+	if info.OnlySecKeyword {
+		db = db.Where("`sec_keyword` != ''")
 	}
 	err = db.Count(&total).Error
 	err = db.Limit(limit).Offset(offset).Find(&searchResults).Error
@@ -101,7 +75,46 @@ func GetSearchResultInfoList(info request.SearchResultSearch) (err error, list i
 }
 
 func CheckExistOfSearchResult(searchResult *model.SearchResult) bool {
-	urlExist := searchResult.CheckUrlExists()
+	urlExist := searchResult.CheckPathExists()
 	repoExists := searchResult.CheckRepoExists()
 	return urlExist || repoExists
+}
+
+func SaveSearchResults(searchResults []model.SearchResult) int {
+	var insertCount int
+	for _, result := range searchResults {
+		exist := CheckExistOfSearchResult(&result)
+		if exist {
+			continue
+		}
+		err := CreateSearchResult(result)
+		if err != nil {
+			global.GVA_LOG.Error("save search result error", zap.Any("save searchResult error",
+				err))
+		} else {
+			insertCount++
+		}
+	}
+	return insertCount
+}
+
+func GetReposByStatus(status int) (error, []string) {
+	var results []model.SearchResult
+	// todo: add rule_type column
+	err := global.GVA_DB.Distinct().Select("repo").Where("status = ?",
+		status).Find(&results).Error
+	repos := make([]string, 0)
+	if err != nil {
+		return err, repos
+	}
+	for _, result := range results {
+		repos = append(repos, result.Repo)
+	}
+	return err, repos
+}
+
+func GetKeywordByRepo(repo string) (string, error) {
+	var result model.SearchResult
+	err := global.GVA_DB.Where("repo = ?", repo).First(&result).Error
+	return result.Keyword, err
 }

@@ -1,23 +1,20 @@
 package v1
 
 import (
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/madneal/gshark/global"
 	"github.com/madneal/gshark/model"
 	"github.com/madneal/gshark/model/request"
 	"github.com/madneal/gshark/model/response"
+	"github.com/madneal/gshark/search/githubsearch"
 	"github.com/madneal/gshark/service"
 	"go.uber.org/zap"
+	"strings"
 )
 
-// @Tags SearchResult
-// @Summary 创建SearchResult
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body model.SearchResult true "创建SearchResult"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"获取成功"}"
-// @Router /searchResult/createSearchResult [post]
+var taskStatus = "stop"
+
 func CreateSearchResult(c *gin.Context) {
 	var searchResult model.SearchResult
 	_ = c.ShouldBindJSON(&searchResult)
@@ -29,14 +26,6 @@ func CreateSearchResult(c *gin.Context) {
 	}
 }
 
-// @Tags SearchResult
-// @Summary 删除SearchResult
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body model.SearchResult true "删除SearchResult"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"删除成功"}"
-// @Router /searchResult/deleteSearchResult [delete]
 func DeleteSearchResult(c *gin.Context) {
 	var searchResult model.SearchResult
 	_ = c.ShouldBindJSON(&searchResult)
@@ -48,14 +37,6 @@ func DeleteSearchResult(c *gin.Context) {
 	}
 }
 
-// @Tags SearchResult
-// @Summary 批量删除SearchResult
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body request.IdsReq true "批量删除SearchResult"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"批量删除成功"}"
-// @Router /searchResult/deleteSearchResultByIds [delete]
 func DeleteSearchResultByIds(c *gin.Context) {
 	var IDS request.IdsReq
 	_ = c.ShouldBindJSON(&IDS)
@@ -78,14 +59,69 @@ func UpdateSearchResultByIds(c *gin.Context) {
 	}
 }
 
-// @Tags SearchResult
-// @Summary 更新SearchResult
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body model.SearchResult true "更新SearchResult"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"更新成功"}"
-// @Router /searchResult/updateSearchResult [put]
+func GetTaskStatus(c *gin.Context) {
+	response.OkWithMessage(taskStatus, c)
+}
+
+func StartSecFilterTask(c *gin.Context) {
+	response.Ok(c)
+	go func(taskStatus *string) {
+		*taskStatus = "running"
+		client, err := githubsearch.GetGithubClient()
+		if err != nil {
+			*taskStatus = "failed"
+			global.GVA_LOG.Error("GetGithubClient error", zap.Error(err))
+			response.FailWithMessage("初始化 github 客户端失败", c)
+			return
+		}
+		err, repos := service.GetReposByStatus(0)
+		if err != nil {
+			*taskStatus = "failed"
+			global.GVA_LOG.Error("GetReposByStatus error", zap.Error(err))
+			return
+		}
+		err, secKeywordFilters := model.GetFilterByClass("sec_keyword")
+		if err != nil {
+			*taskStatus = "failed"
+			global.GVA_LOG.Error("GetFilterByClass sec_keyword error", zap.Error(err))
+			return
+		}
+		var secKeywords []string
+		for _, secKeywordFilter := range secKeywordFilters {
+			secKeywords = append(secKeywords, strings.Split(secKeywordFilter.Content, ",")...)
+		}
+		for _, repo := range repos {
+			for _, keyword := range secKeywords {
+				query := fmt.Sprintf("repo:%s %s ", repo, keyword)
+				results, err := client.SearchCode(query)
+				// find results after second filter, then ignore the results by repo
+				if len(results) > 0 && *results[0].Total > 0 {
+					err = service.IgnoreResultsByRepo(repo)
+					if err != nil {
+						global.GVA_LOG.Error("IgnoreResultsByRepo error", zap.Error(err))
+						continue
+					}
+				}
+				originalKeyword, err := service.GetKeywordByRepo(repo)
+				if err != nil {
+					global.GVA_LOG.Error("GetKeywordByRepo error", zap.Error(err))
+					continue
+				}
+				if err != nil {
+					global.GVA_LOG.Error("Github search code error", zap.Error(err))
+					continue
+				}
+				if results != nil && len(results) > 0 && *results[0].Total > 0 {
+					githubsearch.SaveResult(results, originalKeyword, keyword)
+				}
+			}
+
+		}
+		*taskStatus = "done"
+	}(&taskStatus)
+
+}
+
 func UpdateSearchResult(c *gin.Context) {
 	var updateReq request.UpdateReq
 	_ = c.ShouldBindJSON(&updateReq)
@@ -97,39 +133,20 @@ func UpdateSearchResult(c *gin.Context) {
 	}
 }
 
-// @Tags SearchResult
-// @Summary 用id查询SearchResult
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body model.SearchResult true "用id查询SearchResult"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"查询成功"}"
-// @Router /searchResult/findSearchResult [get]
 func FindSearchResult(c *gin.Context) {
 	var searchResult model.SearchResult
 	_ = c.ShouldBindQuery(&searchResult)
-	if err, researchResult := service.GetSearchResult(searchResult.ID); err != nil {
+	if err, searchResult := service.GetSearchResult(searchResult.ID); err != nil {
 		global.GVA_LOG.Error("查询失败!", zap.Any("err", err))
 		response.FailWithMessage("查询失败", c)
 	} else {
-		response.OkWithData(gin.H{"researchResult": researchResult}, c)
+		response.OkWithData(gin.H{"searchResult": searchResult}, c)
 	}
 }
 
-// @Tags SearchResult
-// @Summary 分页获取SearchResult列表
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body request.SearchResultSearch true "分页获取SearchResult列表"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"获取成功"}"
-// @Router /searchResult/getSearchResultList [get]
 func GetSearchResultList(c *gin.Context) {
 	var pageInfo request.SearchResultSearch
 	_ = c.ShouldBindQuery(&pageInfo)
-	//if err != nil {
-	//	global.GVA_LOG.Error("GetSearchResultList bind query error", zap.Any("err", err))
-	//}
 	if err, list, total := service.GetSearchResultInfoList(pageInfo); err != nil {
 		global.GVA_LOG.Error("获取失败", zap.Any("err", err))
 		response.FailWithMessage("获取失败", c)

@@ -93,14 +93,10 @@
     >
       <el-form :model="formData" label-position="right" label-width="80px">
         <el-form-item label="规则类型:">
-          <el-select v-model="formData.type">
-            <el-option
-              v-for="item in typeOptions"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            ></el-option>
-          </el-select>
+          <el-radio-group v-model="formData.type">
+            <el-radio label="github"></el-radio>
+            <el-radio label="gitlab"></el-radio>
+          </el-radio-group>
         </el-form-item>
 
         <el-form-item label="token:">
@@ -152,6 +148,10 @@ export default {
         {
           label: "gitlab",
           value: "gitlab",
+        },
+        {
+          label: "postman",
+          value: "postman"
         }
       ],
     };
@@ -174,7 +174,6 @@ export default {
     },
   },
   methods: {
-    //条件搜索前端看此方法
     onSubmit() {
       this.page = 1;
       this.pageSize = 10;

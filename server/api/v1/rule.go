@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"encoding/csv"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/madneal/gshark/global"
@@ -11,14 +12,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// @Tags Rule
-// @Summary 创建Rule
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body model.Rule true "创建Rule"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"获取成功"}"
-// @Router /rule/createRule [post]
 func CreateRule(c *gin.Context) {
 	var rule model.Rule
 	_ = c.ShouldBindJSON(&rule)
@@ -30,14 +23,45 @@ func CreateRule(c *gin.Context) {
 	}
 }
 
-// @Tags Rule
-// @Summary 删除Rule
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body model.Rule true "删除Rule"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"删除成功"}"
-// @Router /rule/deleteRule [delete]
+func UploadRules(c *gin.Context) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		global.GVA_LOG.Error("上传失败！", zap.Error(err))
+		response.FailWithMessage("上传文件失败", c)
+	}
+	file, _ := fileHeader.Open()
+	csvLines, readErr := csv.NewReader(file).ReadAll()
+	if readErr != nil {
+		global.GVA_LOG.Error("csv 文件读取失败！", zap.Error(err))
+		response.FailWithMessage("规则导入失败", c)
+	}
+	rules := convertCsvIntoRules(csvLines)
+	for _, rule := range rules {
+		if err := service.CreateRule(rule); err != nil {
+			global.GVA_LOG.Error("创建Rule失败！", zap.Error(err))
+			response.FailWithMessage("创建规则失败", c)
+			return
+		}
+	}
+}
+
+func convertCsvIntoRules(lines [][]string) []model.Rule {
+	rules := make([]model.Rule, 0)
+	for index, line := range lines {
+		if index == 0 {
+			continue
+		}
+		rules = append(rules, model.Rule{
+			RuleType: line[0],
+			Content:  line[1],
+			Name:     line[2],
+			Desc:     line[3],
+			Status:   true,
+		})
+	}
+	return rules
+}
+
 func DeleteRule(c *gin.Context) {
 	var rule model.Rule
 	_ = c.ShouldBindJSON(&rule)
@@ -49,14 +73,6 @@ func DeleteRule(c *gin.Context) {
 	}
 }
 
-// @Tags Rule
-// @Summary 批量删除Rule
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body request.IdsReq true "批量删除Rule"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"批量删除成功"}"
-// @Router /rule/deleteRuleByIds [delete]
 func DeleteRuleByIds(c *gin.Context) {
 	var IDS request.IdsReq
 	_ = c.ShouldBindJSON(&IDS)
@@ -68,14 +84,6 @@ func DeleteRuleByIds(c *gin.Context) {
 	}
 }
 
-// @Tags Rule
-// @Summary 更新Rule
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body model.Rule true "更新Rule"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"更新成功"}"
-// @Router /rule/updateRule [put]
 func UpdateRule(c *gin.Context) {
 	var rule model.Rule
 	_ = c.ShouldBindJSON(&rule)
@@ -87,33 +95,17 @@ func UpdateRule(c *gin.Context) {
 	}
 }
 
-// @Tags Rule
-// @Summary 用id查询Rule
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body model.Rule true "用id查询Rule"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"查询成功"}"
-// @Router /rule/findRule [get]
 func FindRule(c *gin.Context) {
 	var rule model.Rule
 	_ = c.ShouldBindQuery(&rule)
-	if err, rerule := service.GetRule(rule.ID); err != nil {
+	if err, rule := service.GetRule(rule.ID); err != nil {
 		global.GVA_LOG.Error("查询失败!", zap.Any("err", err))
 		response.FailWithMessage("查询失败", c)
 	} else {
-		response.OkWithData(gin.H{"rerule": rerule}, c)
+		response.OkWithData(gin.H{"rule": rule}, c)
 	}
 }
 
-// @Tags Rule
-// @Summary 分页获取Rule列表
-// @Security ApiKeyAuth
-// @accept application/json
-// @Produce application/json
-// @Param data body request.RuleSearch true "分页获取Rule列表"
-// @Success 200 {string} string "{"success":true,"data":{},"msg":"获取成功"}"
-// @Router /rule/getRuleList [get]
 func GetRuleList(c *gin.Context) {
 	var pageInfo request.RuleSearch
 	_ = c.ShouldBindQuery(&pageInfo)
